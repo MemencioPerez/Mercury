@@ -39,14 +39,19 @@ dependencies {
 }
 
 tasks.withType<Javadoc> {
-    exclude("${project.group}.$artifactId.jdt.".replace('.', '/'))
+    exclude("**/jdt/**")
+    (options as StandardJavadocDocletOptions).apply {
+        addBooleanOption("Xdoclint:none", true)
+    }
 }
+
+val patchesTarget = file("build/jdt/patched").also { it.mkdirs() }
 
 // Patched ImportRewrite from JDT
 patches {
     patches = file("patches")
     rootDir = file("build/jdt/original")
-    target = file("build/jdt/patched").also { it.mkdirs() }
+    target = patchesTarget
 }
 val jdtSrcDir = file("jdt")
 
@@ -59,18 +64,25 @@ val extractJdt = task<Copy>("extractJdt") {
 }
 tasks.applyPatches {
     inputs.files(extractJdt)
+    outputs.dir(patchesTarget)
+}
+val ensurePatchedDir = tasks.register("ensurePatchedDir") {
+    outputs.dir("build/jdt/patched")
+    doLast {
+        file("build/jdt/patched").mkdirs()
+    }
 }
 tasks.resetSources {
-    dependsOn(extractJdt)
+    dependsOn(ensurePatchedDir, extractJdt)
 }
 
 val renames = listOf(
-        "org.eclipse.jdt.core.dom.rewrite" to "$group.$artifactId.jdt.rewrite.imports",
-        "org.eclipse.jdt.internal.core.dom.rewrite.imports" to "$group.$artifactId.jdt.internal.rewrite.imports"
+		"org.eclipse.jdt.core.dom.rewrite" to "org.cadixdev.mercury.jdt.rewrite.imports",
+		"org.eclipse.jdt.internal.core.dom.rewrite.imports" to "org.cadixdev.mercury.jdt.internal.rewrite.imports"
 )
 
 fun createRenameTask(prefix: String, inputDir: File, outputDir: File, renames: List<Pair<String, String>>): Task
-        = task<Copy>("${prefix}renameJdt") {
+        = task<Sync>("${prefix}renameJdt") {
     destinationDir = file(outputDir)
 
     renames.forEach { (old, new) ->
@@ -82,10 +94,12 @@ fun createRenameTask(prefix: String, inputDir: File, outputDir: File, renames: L
     filter { renames.fold(it) { s, (from, to) -> s.replace(from, to) } }
 }
 
-val renameTask = createRenameTask("", patches.target, jdtSrcDir, renames)
-renameTask.inputs.files(tasks["applyPatches"])
+val renameTask = createRenameTask("", patchesTarget, jdtSrcDir, renames)
+renameTask.dependsOn(tasks["applyPatches"])
+renameTask.inputs.dir(patchesTarget)
+renameTask.outputs.dir(jdtSrcDir)
 
-tasks["makePatches"].inputs.files(createRenameTask("un", jdtSrcDir, patches.target, renames.map { (a,b) -> b to a }))
+tasks["makePatches"].inputs.files(createRenameTask("un", jdtSrcDir, patchesTarget, renames.map { (a,b) -> b to a }))
 sourceSets["main"].java.srcDirs(renameTask)
 
 tasks.jar.configure {
@@ -177,6 +191,7 @@ publishing {
 }
 
 signing {
+    isRequired = false
     sign(publishing.publications["mavenJava"])
 }
 
